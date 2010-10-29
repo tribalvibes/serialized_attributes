@@ -1,24 +1,30 @@
 module SerializedAttributes
   class Schema
     class << self
-      attr_writer :default_schema
+      attr_writer :default_schema, :defaults
       def default_schema
         @default_schema ||= SerializedAttributes::Format::ActiveSupportJson
+      end
+      def defaults
+      	@defaults ||= { skip_encoding: false, symbolize_keys: false }
       end
     end
 
     attr_accessor :formatter
     attr_reader :model, :field, :fields
+    attr_reader :skip_encoding, :symbolize_keys
 
     def all_column_names
       fields ? fields.keys : []
     end
 
     def encode(body)
-      body = body.dup
-      body.each do |key, value|
-        if field = fields[key]
-          body[key] = field.encode(value)
+      unless skip_encoding
+        body = body.dup
+        body.each do |key, value|
+          if field = fields[key]
+            body[key] = field.encode(value)
+          end
         end
       end
       formatter.encode(body)
@@ -28,10 +34,26 @@ module SerializedAttributes
       @fields.include?(key.to_s)
     end
 
+    def symbolize_keys!( o )
+      case o
+        when ::Array; o.map! {|e| symbolize_keys!(e) }
+        when ::Hash
+            o.replace(  o.inject({}) do |h, (k, v)|
+                 h[(k.to_sym rescue k) || k] = symbolize_keys!( v )
+                 h
+               end
+              )
+        else
+          o
+      end
+    end
+      
     def initialize(model, field, options)
       @model, @field, @fields = model, field, {}
       @blob_field = options.delete(:blob) || "raw_#{@field}"
       @formatter  = options.delete(:formatter) || self.class.default_schema
+      @skip_encoding = options.delete(:skip_encoding) || self.class.defaults.skip_encoding
+      @symbolize_keys = options.delete(:symbolize_keys) || self.class.defaults.symbolize_keys
       blob_field  = @blob_field
       data_field  = @field
 
@@ -72,7 +94,8 @@ module SerializedAttributes
           decoded.each do |k, v|
             next unless schema.include?(k)
             type = schema.fields[k]
-            hash[k] = type ? type.parse(v) : v
+            v = schema.symbolize_keys!( v ) if schema.symbolize_keys
+            hash[k] = type && !schema.skip_encoding ? type.parse(v) : v
           end
           if decoded.blank? && new_record?
             schema.fields.each do |key, type|
@@ -90,7 +113,7 @@ module SerializedAttributes
         type     = schema.fields[name_str]
         changed_fields = send(changed_ivar)
         instance_variable_get("@#{changed_ivar}")[name_str] = raw_data[name_str] unless changed_fields.include?(name_str)
-        parsed_value = type ? type.parse(value) : value
+        parsed_value = type && !schema.skip_encoding ? type.parse(value) : value
         if parsed_value.nil?
           raw_data.delete(name_str)
         else
@@ -140,8 +163,9 @@ module SerializedAttributes
         end
 
         @model.send(:define_method, "#{name}_before_type_cast") do
+          schema   = self.class.send("#{data_field}_schema")
           value = send(name)
-          value = type.encode(value) if type
+          value = type.encode(value) if type unless schema.skip_encoding
           value.to_s
         end
 

@@ -49,7 +49,9 @@ module SerializedAttributes
   add_type :hash,    Hash
 
   module ModelMethods
-    def serialize_attributes(field = :data, options = {}, &block)
+    def serialize_attributes( *args, &block )
+      options = args.extract_options!
+      field = args.shift || :data
       schema = Schema.new(self, field, options)
       schema.instance_eval(&block)
       schema.fields.freeze
